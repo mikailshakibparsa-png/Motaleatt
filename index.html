@@ -1,0 +1,331 @@
+
+<!DOCTYPE html>
+<html lang="fa">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Earth Simulator</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;background:#030712;color:white;font-family:Arial,sans-serif}
+header{height:60px;display:flex;align-items:center;justify-content:center;
+font-size:20px;letter-spacing:5px;color:#83d9ff;border-bottom:1px solid #183044}
+main{max-width:1200px;margin:auto;padding:16px}
+.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
+.panel{position:relative;height:330px;background:radial-gradient(ellipse at center,#101d32,#030712 75%);border:1px solid #1c344b;border-radius:12px;overflow:hidden}
+canvas{display:block;width:100%;height:100%}
+.label{position:absolute;top:12px;left:14px;font-size:12px;color:#9fc9e5;letter-spacing:2px;pointer-events:none}
+.controls{display:flex;gap:10px;justify-content:center;align-items:center;padding:18px;flex-wrap:wrap}
+button{background:#10243b;color:#d5efff;border:1px solid #315473;border-radius:7px;padding:10px 16px;cursor:pointer}
+button:hover{background:#1b4265}
+input{accent-color:#55c9ff;width:140px}
+@media(max-width:650px){.grid{grid-template-columns:1fr}.panel{height:290px}header{height:50px}}
+</style>
+</head>
+<body>
+<header>EARTH / ORBIT</header>
+<main>
+<div class="grid">
+  <div class="panel"><div class="label">01 / ROTATION</div><canvas id="rotation"></canvas></div>
+  <div class="panel"><div class="label">02 / ORBIT</div><canvas id="orbit"></canvas></div>
+  <div class="panel"><div class="label">03 / SEASONS</div><canvas id="seasons"></canvas></div>
+  <div class="panel"><div class="label">04 / ECLIPSES</div><canvas id="eclipse"></canvas></div>
+</div>
+<div class="controls">
+<button id="toggle">Ⅱ PAUSE</button>
+<button id="slower">− SPEED</button>
+<button id="faster">+ SPEED</button>
+</div>
+</main>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.166.1/build/three.module.js"
+  }
+}
+</script>
+<script type="module">
+import * as THREE from 'three';
+
+const textureLoader = new THREE.TextureLoader();
+const earthMap = textureLoader.load(
+ 'https://threejs.org/examples/textures/planets/earth_atmos_2048.jpg'
+);
+const moonMap = textureLoader.load(
+ 'https://threejs.org/examples/textures/planets/moon_1024.jpg'
+);
+earthMap.colorSpace = THREE.SRGBColorSpace;
+moonMap.colorSpace = THREE.SRGBColorSpace;
+
+const panels = {};
+let paused = false;
+let speed = 1;
+const clock = new THREE.Clock();
+
+function setup(id, cameraZ=7) {
+  const canvas = document.getElementById(id);
+  const renderer = new THREE.WebGLRenderer({
+    canvas, antialias:true, alpha:true
+  });
+  renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+  renderer.outputColorSpace = THREE.SRGBColorSpace;
+  renderer.toneMapping = THREE.ACESFilmicToneMapping;
+  renderer.toneMappingExposure = 1.15;
+
+  const scene = new THREE.Scene();
+  const camera = new THREE.PerspectiveCamera(38,1,0.1,100);
+  camera.position.z = cameraZ;
+
+  scene.add(new THREE.AmbientLight(0xffffff,0.35));
+
+  function resize() {
+    const w = canvas.clientWidth || 300;
+    const h = canvas.clientHeight || 300;
+    renderer.setSize(w,h,false);
+    camera.aspect = w/h;
+    camera.updateProjectionMatrix();
+  }
+
+  resize();
+  panels[id] = {scene,camera,renderer,resize};
+  return scene;
+}
+
+function earth(radius=1) {
+  const group = new THREE.Group();
+  const globe = new THREE.Mesh(
+    new THREE.SphereGeometry(radius,64,48),
+    new THREE.MeshStandardMaterial({
+      map:earthMap,
+      roughness:0.85,
+      metalness:0
+    })
+  );
+  group.add(globe);
+
+  // Subtle blue atmospheric rim
+  const atmosphere = new THREE.Mesh(
+    new THREE.SphereGeometry(radius*1.025,48,32),
+    new THREE.MeshBasicMaterial({
+      color:0x328dff,
+      transparent:true,
+      opacity:0.09,
+      side:THREE.BackSide
+    })
+  );
+  group.add(atmosphere);
+  return group;
+}
+
+function sun(radius=0.65) {
+  const group = new THREE.Group();
+  const core = new THREE.Mesh(
+    new THREE.SphereGeometry(radius,48,32),
+    new THREE.MeshBasicMaterial({color:0xffbd49})
+  );
+  group.add(core);
+
+  const glow = new THREE.Mesh(
+    new THREE.SphereGeometry(radius*1.25,32,24),
+    new THREE.MeshBasicMaterial({
+      color:0xff8a20,transparent:true,opacity:0.13,
+      side:THREE.BackSide
+    })
+  );
+  group.add(glow);
+
+  const light = new THREE.PointLight(0xffffff,100,100,2);
+  group.add(light);
+  return group;
+}
+
+function stars(scene,count=350) {
+  const positions = [];
+  for(let i=0;i<count;i++){
+    positions.push(
+      (Math.random()-.5)*32,
+      (Math.random()-.5)*20,
+      -3-Math.random()*18
+    );
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position',new THREE.Float32BufferAttribute(positions,3));
+  scene.add(new THREE.Points(geo,new THREE.PointsMaterial({
+    color:0xffffff,size:0.035,transparent:true,opacity:0.8
+  })));
+}
+
+function orbitLine(scene,rx,rz,color=0x345775) {
+  const points=[];
+  for(let i=0;i<=240;i++){
+    const a=i/240*Math.PI*2;
+    points.push(new THREE.Vector3(rx*Math.cos(a),0,rz*Math.sin(a)));
+  }
+  const line=new THREE.Line(
+    new THREE.BufferGeometry().setFromPoints(points),
+    new THREE.LineBasicMaterial({color,transparent:true,opacity:.75})
+  );
+  scene.add(line);
+  return line;
+}
+
+// 01: Earth's daily rotation
+{
+  const scene=setup('rotation',5.2);
+  stars(scene);
+  scene.add(new THREE.HemisphereLight(0x8acaff,0x071020,0.7));
+  const key=new THREE.DirectionalLight(0xffffff,3.0);
+  key.position.set(-4,2,5);
+  scene.add(key);
+  const globe=earth(1.25);
+  globe.rotation.z=THREE.MathUtils.degToRad(23.5);
+  scene.add(globe);
+  panels.rotationEarth=globe;
+}
+
+// 02: Earth orbiting the Sun on an elliptical path
+{
+  const scene=setup('orbit',10.5);
+  stars(scene,450);
+  const star=sun(.8);
+  scene.add(star);
+  orbitLine(scene,3.8,2.55,0x397ba8);
+
+  const earthGroup=new THREE.Group();
+  const globe=earth(.37);
+  globe.rotation.z=THREE.MathUtils.degToRad(23.5);
+  earthGroup.add(globe);
+  scene.add(earthGroup);
+  panels.orbitEarth=earthGroup;
+  panels.orbitGlobe=globe;
+  panels.orbitSun=star;
+}
+
+// 03: Seasons: the axis stays tilted in the same direction
+{
+  const scene=setup('seasons',10.2);
+  stars(scene,300);
+  scene.add(sun(.65));
+  orbitLine(scene,3.8,2.55,0x397ba8);
+
+  const positions=[];
+  for(let i=0;i<4;i++){
+    const a=i*Math.PI/2;
+    const group=new THREE.Group();
+    const globe=earth(.35);
+    globe.rotation.z=THREE.MathUtils.degToRad(23.5);
+    group.add(globe);
+
+    // A visible axis passing through the poles
+    const axis=new THREE.Line(
+      new THREE.BufferGeometry().setFromPoints([
+        new THREE.Vector3(0,-.56,0),
+        new THREE.Vector3(0,.56,0)
+      ]),
+      new THREE.LineBasicMaterial({color:0x8ce7ff})
+    );
+    globe.add(axis);
+    scene.add(group);
+    positions.push({group,globe,a});
+  }
+  panels.seasonEarths=positions;
+  panels.seasonSun=scene.children.find(o=>o.isGroup);
+}
+
+// 04: Sun, Earth and Moon, with a moving Moon
+{
+  const scene=setup('eclipse',9);
+  stars(scene,250);
+  const star=sun(.8);
+  star.position.x=-2.5;
+  scene.add(star);
+
+  const globe=earth(.63);
+  globe.position.x=.1;
+  scene.add(globe);
+
+  const moon=new THREE.Mesh(
+    new THREE.SphereGeometry(.19,40,32),
+    new THREE.MeshStandardMaterial({
+      map:moonMap,roughness:1
+    })
+  );
+  moon.position.set(1.9,0,0);
+  scene.add(moon);
+
+  const light=new THREE.PointLight(0xffffff,90,30);
+  light.position.copy(star.position);
+  scene.add(light);
+
+  panels.eclipseEarth=globe;
+  panels.eclipseMoon=moon;
+}
+
+// Keep the axial tilt pointed in the same world direction
+function update() {
+  const dt=Math.min(clock.getDelta(),0.05)*speed;
+  if(!paused){
+    if(panels.rotationEarth) {
+      panels.rotationEarth.children[0].rotation.y+=dt*.55;
+    }
+
+    if(panels.orbitEarth){
+      panels.orbitAngle=(panels.orbitAngle||0)+dt*.35;
+      const a=panels.orbitAngle;
+      panels.orbitEarth.position.set(
+        3.8*Math.cos(a),0,2.55*Math.sin(a)
+      );
+      panels.orbitGlobe.children[0].rotation.y+=dt*.45;
+    }
+
+    if(panels.seasonEarths){
+      panels.seasonAngle=(panels.seasonAngle||0)+dt*.16;
+      const a=panels.seasonAngle;
+      panels.seasonEarths.forEach((item,i)=>{
+        const t=a+i*Math.PI/2;
+        item.group.position.set(
+          3.8*Math.cos(t),0,2.55*Math.sin(t)
+        );
+        item.globe.children[0].rotation.y+=dt*.4;
+      });
+    }
+
+    if(panels.eclipseMoon){
+      panels.eclipseAngle=(panels.eclipseAngle||0)+dt*.42;
+      const a=panels.eclipseAngle;
+      panels.eclipseMoon.position.set(
+        .1+1.25*Math.cos(a),
+        .85*Math.sin(a),
+        .2
+      );
+      panels.eclipseMoon.rotation.y+=dt*.3;
+      panels.eclipseEarth.children[0].rotation.y+=dt*.2;
+    }
+  }
+
+  Object.values(panels).forEach(p=>{
+    if(p && p.renderer) p.renderer.render(p.scene,p.camera);
+  });
+  requestAnimationFrame(update);
+}
+
+window.addEventListener('resize',()=>{
+  Object.values(panels).forEach(p=>p.resize && p.resize());
+});
+
+document.getElementById('toggle').onclick=()=>{
+  paused=!paused;
+  document.getElementById('toggle').textContent=paused?'▶ PLAY':'Ⅱ PAUSE';
+};
+document.getElementById('slower').onclick=()=>{
+  speed=Math.max(.2,speed/1.4);
+};
+document.getElementById('faster').onclick=()=>{
+  speed=Math.min(4,speed*1.4);
+};
+
+update();
+</script>
+</body>
+</html>
